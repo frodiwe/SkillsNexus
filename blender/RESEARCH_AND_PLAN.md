@@ -272,6 +272,54 @@ crevices; kitbash and reuse parts; check readability from in-game camera distanc
 - Eevee Next (4.2+) replaced blend modes with *Render Method* (Dithered/Blended), which matters for hair
   cards and foliage alpha.
 
+### 1.11 Generating textures with image models (Nano Banana etc.)
+
+The pipeline already has scripts that call an image model (Nano Banana / Gemini image). What's missing
+is the knowledge the *coding agent* needs to decide which textures an asset requires, how to prompt for
+them, how to turn a generated picture into a usable PBR texture set, and how to apply it. Findings:
+
+**Model facts (Gemini API docs, current family):** Nano Banana 2.1 is the main generation/editing model;
+2 Lite is fastest and cheapest but weak with multiple references and multi-turn editing; Pro handles complex
+tasks and takes up to 3 *style* references. Output sizes are 1K/2K/4K (sizes need an uppercase K), with
+a range of aspect ratios (1:1, 3:2, 4:3, 16:9, 21:9…). Up to 14 reference images; multi-turn editing
+via `previous_interaction_id`. Every image carries a SynthID watermark. I could not confirm alpha output,
+so assume none.
+
+**Strategies professionals and AI-texturing tools use, by asset type:**
+
+| Strategy | Best for | How | Reliability |
+|---|---|---|---|
+| **Tileable material** | Wood, brick, metal, fabric, ground, rock, plaster: most surfaces of most assets | Square, top-down, flat-lit, seamless albedo; maps derived from it; applied at real-world scale | High: the default |
+| **Material-ID hybrid** | Props and hard surface | Each material region (wood / iron / leather) gets a tileable material; baked AO/curvature drive edge wear and dirt | High: best default for unique props |
+| **Atlas / sheet** | Trim sheets, hair-card strands, leaf cards, decals | Layout spelled out in the prompt (strip heights, cell grid); generated on a flat key color, alpha extracted afterwards | Medium: layout needs checking |
+| **View projection** | Hero/unique and stylized hand-painted assets, faces, characters | Render the model from several views (with depth/normal/line renders as references), have the model paint each view keeping the silhouette, project each view onto the mesh, blend by facing angle, bake to the final UVs | Medium-low: seams and view mismatch need care. Tools like StableProjectorz and Textures Diffusion follow this route |
+| **Direct UV-space painting** | Rarely | Ask the model to paint a UV layout image | Low: image models don't understand UV islands; seams don't match |
+
+**Turning a picture into PBR maps:**
+- Don't trust an image model to produce physically meaningful normal/roughness maps. Generate the
+  **albedo** (and optionally a grayscale height by editing the same image) and *derive* the rest:
+  height from depth estimation or luminance with high-pass; normal from height (Sobel, OpenGL Y+);
+  AO/cavity from height; roughness from a material-specific remap of luminance/height; metallic from a
+  mask or a constant (it's binary).
+- **Delighting:** albedo must hold no shadows, highlights or directional gradients. Prompt for flat
+  lighting, then check for low-frequency luminance gradients and flatten them. Stylized hand-painted
+  textures are the exception: painted light is intended there.
+- **Seamless tiling:** prompt for it, then verify by tiling 3×3. Fix with offset-by-half and heal the
+  centre seam (or a model edit pass on the seam region), or use multiband/mirror blends. Too-soft blending
+  smudges the result and cloning seam pixels causes ghosting.
+- Clamp the albedo to PBR ranges (non-metal sRGB ≈ 30/50–240), resize to power-of-two, assign the
+  correct color spaces, pack ORM.
+
+**Prompting rules that recur in tools and guides:** state the material and its **real-world coverage**
+("2 × 2 m of oak planks, boards 20 cm wide") so texel density stays consistent; orthographic top-down,
+evenly lit, no perspective, no objects, no text, no border, fills the frame; palette and style from the
+asset spec; pass a project **style reference image** to every call so a set of assets matches.
+
+**Reuse:** generated materials go into a project material library with their prompt, references and
+settings saved alongside, so "oak planks" is generated once and reused across every crate and table.
+Prefer a scanned CC0 material (Poly Haven, available via MCP) when a generic realistic material exists,
+since its maps are measured rather than guessed; generate when the look is specific, stylized or unusual.
+
 ---
 
 ## Part 2: Conclusion
@@ -306,6 +354,10 @@ crevices; kitbash and reuse parts; check readability from in-game camera distanc
    value ranges, naming patterns. These go in reference files so SKILL.md stays short.
 7. **Blender version drift is a real failure source.** Reference API notes for 4.1+ and 5.x belong in a
    shared technique skill, not repeated in every modeling skill.
+8. **Image generation is a texture *source*, not a texture pipeline.** The agent writing the code has to
+   choose the right strategy per asset (tileable, material-ID hybrid, atlas, projection), write prompts
+   that produce usable source images, derive the PBR maps procedurally, and verify tiling, lighting and
+   value ranges. That needs its own skill alongside the material rules.
 
 ---
 
@@ -337,6 +389,7 @@ UV/bake/material/delivery skills.
 | 9 | `baking-high-to-low` | Making the low poly (silhouette budget), hard edges ↔ seams, triangulation, cage/extrusion/ray distance, Cycles bake setup via bpy, bake map set, OpenGL/DirectX, bake-by-parts, troubleshooting artifacts. Includes **refining AI-generated (Hyper3D) meshes** as high poly → clean low poly. | The bridge between detailed and game-ready assets; many silent failure modes. |
 | 10 | `pbr-materials-texturing` | PBR value ranges, metalness/roughness rules, node-based procedural texturing (AO/curvature/position masks, edge wear, dirt, layering), Poly Haven texture use, baking materials to images, color spaces, channel packing, texture resolution choice, stylized/hand-painted variant. | Flat single-color Principled BSDFs are the second most visible quality problem. |
 | 11 | `game-ready-export` | Tri budgets per class/platform, LOD generation, collision meshes, naming conventions, pivots, applying transforms, FBX/glTF settings per engine, final checklist. | Assets must actually work downstream; easy to automate with scripts. |
+| 21 | `ai-texture-generation` | For the coding agent: working out which textures an asset needs from its spec; picking a strategy (tileable / material-ID hybrid / atlas / view projection); prompt templates per strategy and material; calling your existing generation scripts; deriving height/normal/AO/roughness/metal; delighting, seamless fixing, alpha extraction; applying in Blender at real-world scale; view-projection + bake recipe; style-reference consistency; project material library and reuse; when to use Poly Haven instead; QA (3×3 tile test, value-range and gradient checks, artifact/text check). | You already generate images, but the agent doesn't know what to ask for or how to turn the result into a correct texture set. #10 covers material rules; #21 covers sourcing images. Hair (#15), trim sheets (#19) and vegetation (#20) also call it. |
 
 ### Tier 2: Characters
 
@@ -357,10 +410,11 @@ UV/bake/material/delivery skills.
 | 19 | `modular-kits-trim-sheets` | Grid systems and piece lists, pivot/snap conventions, seam hiding, trim sheet design and UV mapping, tiling textures, vertex-color blending, decals, architectural dimension standards, building/facade generators. | Buildings and interiors need a system, otherwise seams and scale break. |
 | 20 | `nature-terrain-vegetation` | Rocks/cliffs (displace, voxel-merge, decimate, bake, reuse-from-any-angle), terrain from displaced grids/GN, trees (curve/generator trunks + leaf cards), grass/bush cards, scatter rules, world-aligned/Z-up material blending, water surfaces. | Organic environments rely on procedural and card techniques that differ from hard-surface. |
 
-**Why 20 and not fewer:** each skill matches a distinct body of knowledge that professionals also
+**Why 21 and not fewer:** each skill matches a distinct body of knowledge that professionals also
 specialize in, and each must stay short enough to load into context next to the task. The shared Tier 0–1
-skills keep the specialist skills from repeating UV/bake/material/export rules. If 20 is too many to
-maintain, the safe merges are 7 into 20, 12 into 13, and 19 into 18.
+skills keep the specialist skills from repeating UV/bake/material/export rules. If 21 is too many to
+maintain, the safe merges are 7 into 20, 12 into 13, and 19 into 18. If #21 grows too large, the view
+projection recipe can split off into its own skill.
 
 **Deliberately excluded:** rigging, weight painting, animation, simulation-for-motion, rendering/lighting
 for final shots (only review lighting is covered), and external tools (ZBrush, Substance, Marvelous)
@@ -379,6 +433,9 @@ Decisions that change the content (defaults in brackets are what I'll assume if 
 - Which Blender MCP fork, and does it have viewport screenshots / render-to-image? [ahujasid's, with `get_viewport_screenshot`]
 - Allowed add-ons (MPFB for human base meshes, Quad Remesher paid, etc.)? [Blender built-ins + free add-ons only]
 - Is Hyper3D/AI generation part of the pipeline? [optional input, always refined]
+- Your texture-generation scripts: where they live, their interface (inputs: prompt, reference images,
+  size, aspect ratio, model; outputs: file paths), whether they already make seamless or derived maps, and
+  which Nano Banana model they call. Skill #21 will be written against that interface.
 - Where should the skills live (this repo, `blender/` folder) and in what format (Claude Code `SKILL.md`
   directories)? [yes]
 
@@ -389,8 +446,12 @@ skills, and `scripts/` with `validate_mesh.py`, `capture_views.py` (ortho/persp/
 
 ### Phase 2: Core disciplines (skills 4–11)
 Order: `form-and-proportion` → `topology-fundamentals` → `hard-surface-modeling` → `pbr-materials-texturing`
-→ `uv-unwrapping` → `baking-high-to-low` → `game-ready-export` → `procedural-geometry-nodes`.
-At the end of this phase the pipeline can make good props.
+→ `ai-texture-generation` → `uv-unwrapping` → `baking-high-to-low` → `game-ready-export` →
+`procedural-geometry-nodes`. `ai-texture-generation` ships first with the tileable and material-ID
+strategies (most reliable); atlas and view projection follow once UV and bake skills exist. Scripts:
+`derive_pbr_maps.py` (height/normal/AO/roughness from albedo), `make_seamless.py`, `tile_preview.py`,
+`check_albedo.py`, `extract_alpha.py`, `project_views_and_bake.py`.
+At the end of this phase the pipeline can make good, textured props.
 
 ### Phase 3: Props & environments (skills 17–20)
 Uses Phase 2 heavily; mostly domain rules, reference tables and generator recipes.
@@ -441,4 +502,5 @@ draws on long-established industry practice.
 - PBR: [Cocos PBR guide](https://docs.cocos.com/creator/manual/en/shader/effect-builtin-pbr.html), [PBR albedo chart](https://shinsoj.artstation.com/blog/Q9j6/pbr-color-space-conversion-and-albedo-chart), [Smush material research](https://github.com/ScanMountGoat/Smush-Material-Research/blob/master/Textures.md), [ACES PBR validator](https://cirocardoso.gumroad.com/l/vmcfzk)
 - Export/engine: [Blender to UE5 pipeline](https://sarahhyperdense.substack.com/p/blender-to-ue5-the-complete-export), [Epic FBX static mesh pipeline](https://docs.unrealengine.com/udk/Three/FBXStaticMeshPipeline.html), [UE FbxStaticMeshImportData](https://docs.unrealengine.com/5.0/en-US/PythonAPI/class/FbxStaticMeshImportData.html)
 - Blender API/manual: [Blender 5.0 Python API release notes](https://developer.blender.org/docs/release_notes/5.0/python_api/), [Auto smooth replaced by node group (PR #108014)](https://projects.blender.org/blender/blender/pulls/108014), [Auto smooth regression discussion](https://projects.blender.org/blender/blender/issues/116922), [Blender manual – retopology](https://docs.blender.org/manual/en/4.4/modeling/meshes/retopology.html), [Quad Remesher + shrinkwrap workflow](https://blenderartists.org/t/quadremesher-auto-retopologizer-now-available-for-blender/1170913/117)
+- AI texture generation: [Gemini API – image generation (Nano Banana models)](https://ai.google.dev/gemini-api/docs/image-generation), [Nano Banana Pro developer tutorial](https://dev.to/googleai/introducing-nano-banana-pro-complete-developer-tutorial-5fc8?bb=252921), [Nano Banana Pro guide](https://apiframe.ai/guides/nano-banana-pro-guide), [Scenario – AI texture generation](https://www.scenario.com/blog/ai-texture-generation), [Texture generation overview](https://insertchat.com/glossary/texture-generation), [PBR playground (height-derived maps, seamless blending)](https://replicate.com/vantilator2000/pbr-playground/readme), [ComfyUI seamless texture node](https://comfyai.run/custom_node/ComfyUI-Seamless-Texture), [Making seamless textures](https://virtuall.pro/blog/making-seamless-texture), [Meshy – AI texturing (remove lighting)](https://docs.meshy.ai/en/webapp/guides/3d-model/ai-texturing), [Texturity PBR](https://www.belightsoft.com/products/texturity/), [StableProjectorz (CGPress)](https://cgpress.org/archives/stable-projectorz-an-ai-tool-for-3d-texture-generation.html), [Textures Diffusion for Blender](https://adriflex.gumroad.com/l/texturesdiffusion), [Blender Artists – AI texture projection & UVs](https://blenderartists.org/t/ai-texturing-image-projection-efficient-uv/1497336), [Cycles bake (active image node)](https://developer.blender.org/rBeec3eaba084725a978f4aefb773a16ae9c0420db)
 - Existing agent skills for reference: [arjun988/blender-skills – stylized-style](https://skills.sh/arjun988/blender-skills/stylized-style)
